@@ -215,5 +215,5 @@ class ProjectAgent:
     def load(self):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         save_path = os.path.join(current_dir, "agent.pth")
-        self.model.load_state_dict(torch.load(save_path))
-        self.target_model.load_state_dict(torch.load(save_path))
+        self.model.load_state_dict(torch.load(save_path, map_location=torch.device('cpu')))
+        self.target_model.load_state_dict(torch.load(save_path, map_location=torch.device('cpu')))

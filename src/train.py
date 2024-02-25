@@ -80,7 +80,7 @@ class ProjectAgent:
                           nn.ReLU(),
                           nn.Linear(self.nb_neurons, self.nb_neurons),
                           nn.ReLU(), 
-                          nn.Linear(self.nb_neurons, self.nb_action)).to(device)
+                          nn.Linear(self.nb_neurons, self.nb_actions)).to(device)
         self.target_model = deepcopy(self.model).to(device)
         self.criterion = config['criterion'] if 'criterion' in config.keys() else torch.nn.MSELoss()
         lr = config['learning_rate'] if 'learning_rate' in config.keys() else 0.001

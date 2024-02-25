@@ -76,7 +76,7 @@ class ProjectAgent:
         self.epsilon_stop = config['epsilon_decay_period'] if 'epsilon_decay_period' in config.keys() else 1000
         self.epsilon_delay = config['epsilon_delay_decay'] if 'epsilon_delay_decay' in config.keys() else 20
         self.epsilon_step = (self.epsilon_max-self.epsilon_min)/self.epsilon_stop
-        self.nb_neurons = 64
+        self.nb_neurons = 24
         self.model = torch.nn.Sequential(nn.Linear(self.state_dim, self.nb_neurons),
                           nn.ReLU(),
                           nn.Linear(self.nb_neurons, self.nb_neurons),

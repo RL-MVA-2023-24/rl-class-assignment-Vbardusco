@@ -5,6 +5,7 @@ import torch.nn as nn
 import numpy as np
 import random
 from copy import deepcopy
+import os
 
 env = TimeLimit(
     env=HIVPatient(domain_randomization=False), max_episode_steps=200
@@ -212,5 +213,7 @@ class ProjectAgent:
         torch.save(self.model.state_dict(), path)
 
     def load(self):
-        self.model.load_state_dict(torch.load('agent.pth'))
-        self.target_model.load_state_dict(torch.load('agent.pth'))
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        save_path = os.path.join(current_dir, "agent.pth")
+        self.model.load_state_dict(torch.load(save_path))
+        self.target_model.load_state_dict(torch.load(save_path))

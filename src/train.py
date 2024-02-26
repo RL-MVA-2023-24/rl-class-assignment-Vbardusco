@@ -24,26 +24,24 @@ save_path = "agent.pth"
 
 config = {'nb_actions': env.action_space.n,
           'learning_rate': 0.001,
-          'gamma': 0.95,
-          'buffer_size': 1000000,
+          'gamma': 0.9,
+          'buffer_size': 10000000,
           'epsilon_min': 0.01,
           'epsilon_max': 1.,
-          'epsilon_decay_period': 1000,
+          'epsilon_decay_period': 20000,
           'epsilon_delay_decay': 20,
-          'batch_size': 20,
-          'gradient_steps': 1,
-          'update_target_strategy': 'replace', # or 'ema'
+          'batch_size': 512,
+          'gradient_steps': 10,
+          'update_target_strategy': 'ema', # or 'ema'
           'update_target_freq': 50,
           'update_target_tau': 0.005,
-          'criterion': torch.nn.SmoothL1Loss(),
-          'monitoring_nb_trials': 1}
+          'criterion': torch.nn.SmoothL1Loss()}
 
 def greedy_action(network, state):
-    device = "cuda" if next(network.parameters()).is_cuda else "cpu"
     with torch.no_grad():
         Q = network(torch.Tensor(state).unsqueeze(0).to(device))
         return torch.argmax(Q).item()
-    
+
 class ReplayBuffer:
     def __init__(self, capacity, device):
         self.capacity = int(capacity) # capacity of the buffer
@@ -64,7 +62,6 @@ class ReplayBuffer:
 
 class ProjectAgent:
     def __init__(self):
-        device = "cuda" if torch.cuda.is_available() else "cpu"
         self.nb_actions = config['nb_actions']
         self.state_dim = env.observation_space.shape[0]
         self.gamma = config['gamma'] if 'gamma' in config.keys() else 0.95
@@ -76,51 +73,26 @@ class ProjectAgent:
         self.epsilon_stop = config['epsilon_decay_period'] if 'epsilon_decay_period' in config.keys() else 1000
         self.epsilon_delay = config['epsilon_delay_decay'] if 'epsilon_delay_decay' in config.keys() else 20
         self.epsilon_step = (self.epsilon_max-self.epsilon_min)/self.epsilon_stop
-        self.nb_neurons = 24
-        self.model = torch.nn.Sequential(nn.Linear(self.state_dim, self.nb_neurons),
+        self.nb_neurons = 64
+        self.model = torch.nn.Sequential(nn.Linear(self.state_dim, 64),
                           nn.ReLU(),
-                          nn.Linear(self.nb_neurons, self.nb_neurons),
-                          nn.ReLU(), 
-                          nn.Linear(self.nb_neurons, self.nb_actions)).to(device)
+                          nn.Linear(64,256),
+                          nn.ReLU(),
+                          nn.Linear(256, 256),
+                          nn.ReLU(),
+                          nn.Linear(256,64),
+                          nn.ReLU(),
+                          nn.Linear(64, self.nb_actions)).to(device)
         self.target_model = deepcopy(self.model).to(device)
         self.criterion = config['criterion'] if 'criterion' in config.keys() else torch.nn.MSELoss()
         lr = config['learning_rate'] if 'learning_rate' in config.keys() else 0.001
         self.optimizer = config['optimizer'] if 'optimizer' in config.keys() else torch.optim.Adam(self.model.parameters(), lr=lr)
+        #self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma = 0.999)
         self.nb_gradient_steps = config['gradient_steps'] if 'gradient_steps' in config.keys() else 1
         self.update_target_strategy = config['update_target_strategy'] if 'update_target_strategy' in config.keys() else 'replace'
         self.update_target_freq = config['update_target_freq'] if 'update_target_freq' in config.keys() else 20
         self.update_target_tau = config['update_target_tau'] if 'update_target_tau' in config.keys() else 0.005
-        self.monitoring_nb_trials = config['monitoring_nb_trials'] if 'monitoring_nb_trials' in config.keys() else 0
 
-    def MC_eval(self, env, nb_trials):   # NEW NEW NEW
-        MC_total_reward = []
-        MC_discounted_reward = []
-        for _ in range(nb_trials):
-            x,_ = env.reset()
-            done = False
-            trunc = False
-            total_reward = 0
-            discounted_reward = 0
-            step = 0
-            while not (done or trunc):
-                a = greedy_action(self.model, x)
-                y,r,done,trunc,_ = env.step(a)
-                x = y
-                total_reward += r
-                discounted_reward += self.gamma**step * r
-                step += 1
-            MC_total_reward.append(total_reward)
-            MC_discounted_reward.append(discounted_reward)
-        return np.mean(MC_discounted_reward), np.mean(MC_total_reward)
-    
-    def V_initial_state(self, env, nb_trials):   # NEW NEW NEW
-        with torch.no_grad():
-            for _ in range(nb_trials):
-                val = []
-                x,_ = env.reset()
-                val.append(self.model(torch.Tensor(x).unsqueeze(0).to(device)).max().item())
-        return np.mean(val)
-    
     def gradient_step(self):
         if len(self.memory) > self.batch_size:
             X, A, R, Y, D = self.memory.sample(self.batch_size)
@@ -130,13 +102,10 @@ class ProjectAgent:
             loss = self.criterion(QXA, update.unsqueeze(1))
             self.optimizer.zero_grad()
             loss.backward()
-            self.optimizer.step() 
-    
+            self.optimizer.step()
+
     def train(self, env, max_episode):
         episode_return = []
-        MC_avg_total_reward = []   # NEW NEW NEW
-        MC_avg_discounted_reward = []   # NEW NEW NEW
-        V_init_state = []   # NEW NEW NEW
         episode = 0
         episode_cum_reward = 0
         state, _ = env.reset()
@@ -156,53 +125,35 @@ class ProjectAgent:
             self.memory.append(state, action, reward, next_state, done)
             episode_cum_reward += reward
             # train
-            for _ in range(self.nb_gradient_steps): 
+            for _ in range(self.nb_gradient_steps):
                 self.gradient_step()
             # update target network if needed
             if self.update_target_strategy == 'replace':
-                if step % self.update_target_freq == 0: 
+                if step % self.update_target_freq == 0:
                     self.target_model.load_state_dict(self.model.state_dict())
             if self.update_target_strategy == 'ema':
                 target_state_dict = self.target_model.state_dict()
                 model_state_dict = self.model.state_dict()
                 tau = self.update_target_tau
                 for key in model_state_dict:
-                    target_state_dict[key] = tau*model_state_dict + (1-tau)*target_state_dict
+                    target_state_dict[key] = tau*model_state_dict[key] + (1-tau)*target_state_dict[key]
                 self.target_model.load_state_dict(target_state_dict)
             # next transition
             step += 1
             if done or trunc:
                 episode += 1
-                # Monitoring
-                if self.monitoring_nb_trials>0:
-                    MC_dr, MC_tr = self.MC_eval(env, self.monitoring_nb_trials)    # NEW NEW NEW
-                    V0 = self.V_initial_state(env, self.monitoring_nb_trials)   # NEW NEW NEW
-                    MC_avg_total_reward.append(MC_tr)   # NEW NEW NEW
-                    MC_avg_discounted_reward.append(MC_dr)   # NEW NEW NEW
-                    V_init_state.append(V0)   # NEW NEW NEW
-                    episode_return.append(episode_cum_reward)   # NEW NEW NEW
-                    print("Episode ", '{:2d}'.format(episode), 
-                          ", epsilon ", '{:6.2f}'.format(epsilon), 
-                          ", batch size ", '{:4d}'.format(len(self.memory)), 
-                          ", ep return ", '{:4.1f}'.format(episode_cum_reward), 
-                          ", MC tot ", '{:6.2f}'.format(MC_tr),
-                          ", MC disc ", '{:6.2f}'.format(MC_dr),
-                          ", V0 ", '{:6.2f}'.format(V0),
-                          sep='')
-                else:
-                    episode_return.append(episode_cum_reward)
-                    print("Episode ", '{:2d}'.format(episode), 
-                          ", epsilon ", '{:6.2f}'.format(epsilon), 
-                          ", batch size ", '{:4d}'.format(len(self.memory)), 
-                          ", ep return ", '{:4.1f}'.format(episode_cum_reward), 
-                          sep='')
-
-                
+                #self.scheduler.step()
+                print("Episode ", '{:3d}'.format(episode),
+                      ", epsilon ", '{:6.2f}'.format(epsilon),
+                      ", batch size ", '{:5d}'.format(len(self.memory)),
+                      ", episode return ", '{:.1e}'.format(episode_cum_reward),
+                      sep='')
                 state, _ = env.reset()
+                episode_return.append(episode_cum_reward)
                 episode_cum_reward = 0
             else:
                 state = next_state
-        return episode_return, MC_avg_discounted_reward, MC_avg_total_reward, V_init_state
+        return episode_return
 
 
     def act(self, observation, use_random=False):
